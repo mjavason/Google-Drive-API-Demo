@@ -1,9 +1,11 @@
-import express, { Request, Response, NextFunction } from 'express';
-import 'express-async-errors';
-import cors from 'cors';
 import axios from 'axios';
+import cors from 'cors';
 import dotenv from 'dotenv';
+import express, { NextFunction, Request, Response } from 'express';
+import 'express-async-errors';
 import morgan from 'morgan';
+import { google } from 'googleapis';
+import { OAuth2Client } from 'google-auth-library';
 import { setupSwagger } from './swagger.config';
 
 //#region App Setup
@@ -22,8 +24,69 @@ setupSwagger(app, BASE_URL);
 //#endregion App Setup
 
 //#region Code here
-console.log('Hello world');
-//#endregion
+const oauth2Client = new google.auth.OAuth2(
+  process.env.GOOGLE_CLIENT_ID,
+  process.env.GOOGLE_CLIENT_SECRET,
+  process.env.GOOGLE_REDIRECT_URI
+);
+
+// Generate a URL for the user to authenticate
+export const getAuthUrl = (): string => {
+  const scopes = ['https://www.googleapis.com/auth/drive'];
+  return oauth2Client.generateAuthUrl({
+    access_type: 'offline',
+    scope: scopes,
+  });
+};
+
+// Get OAuth2 client with tokens
+export const getOAuth2Client = (code: string): Promise<OAuth2Client> => {
+  return new Promise((resolve, reject) => {
+    oauth2Client.getToken(code, (err, tokens) => {
+      if (err) {
+        return reject(err);
+      }
+      oauth2Client.setCredentials(tokens!);
+      resolve(oauth2Client);
+    });
+  });
+};
+
+export const listFiles = async (auth: OAuth2Client) => {
+  const drive = google.drive({ version: 'v3', auth });
+
+  const res = await drive.files.list({
+    pageSize: 10,
+    fields: 'nextPageToken, files(id, name)',
+  });
+
+  return res.data.files || [];
+};
+
+// Home Route - Redirect to Google Authentication
+app.get('/', (req, res) => {
+  const authUrl = getAuthUrl();
+  res.redirect(authUrl);
+});
+
+// OAuth2 callback route
+app.get('/oauth2callback', async (req, res) => {
+  const { code } = req.query;
+
+  if (!code) {
+    return res.status(400).send('Missing authentication code');
+  }
+
+  try {
+    const authClient = await getOAuth2Client(code as string);
+    const files = await listFiles(authClient);
+    res.status(200).json({ files });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+//#endregion Code here
 
 //#region Server Setup
 
@@ -92,7 +155,7 @@ app.use((err: any, req: Request, res: Response, next: NextFunction) => {
   console.log(`${'\x1b[31m'}`); // start color red
   console.log(`${err.message}`);
   console.log(`${'\x1b][0m]'}`); //stop color
-  
+
   return res
     .status(500)
     .send({ success: false, status: 500, message: err.message });
@@ -105,4 +168,4 @@ app.listen(PORT, async () => {
 // (for render services) Keep the API awake by pinging it periodically
 // setInterval(pingSelf(BASE_URL), 600000);
 
-//#endregion
+//#endregion Server setup
